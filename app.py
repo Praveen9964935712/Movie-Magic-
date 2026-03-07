@@ -7,6 +7,7 @@ from decimal import Decimal
 import uuid
 import os
 from botocore.exceptions import ClientError
+from urllib.parse import urlparse, parse_qs
 
 app = Flask(__name__)
 
@@ -31,6 +32,49 @@ def replace_decimals(obj):
     elif isinstance(obj, Decimal):
         return int(obj) if obj % 1 == 0 else float(obj)
     return obj
+
+def normalize_image_url(url):
+    """Convert known share links (e.g., Google Drive) to direct image URLs."""
+    if not isinstance(url, str):
+        return url
+
+    clean_url = url.strip()
+    if not clean_url:
+        return clean_url
+
+    file_id = None
+
+    # Format: https://drive.google.com/file/d/<FILE_ID>/view?usp=sharing
+    if 'drive.google.com/file/d/' in clean_url:
+        tail = clean_url.split('/file/d/', 1)[1]
+        file_id = tail.split('/', 1)[0]
+
+    # Format: https://drive.google.com/open?id=<FILE_ID>
+    elif 'drive.google.com/open' in clean_url:
+        parsed = urlparse(clean_url)
+        file_id = parse_qs(parsed.query).get('id', [None])[0]
+
+    # Format: https://drive.google.com/uc?id=<FILE_ID>
+    elif 'drive.google.com/uc' in clean_url:
+        parsed = urlparse(clean_url)
+        file_id = parse_qs(parsed.query).get('id', [None])[0]
+
+    if file_id:
+        return f"https://drive.google.com/uc?export=view&id={file_id}"
+
+    return clean_url
+
+def prepare_movie_for_view(movie):
+    """Normalize DynamoDB types and image URL format for templates."""
+    if not movie:
+        return movie
+
+    prepared = replace_decimals(movie)
+    prepared['image'] = normalize_image_url(prepared.get('image', ''))
+    return prepared
+
+def prepare_movies_for_view(movies):
+    return [prepare_movie_for_view(movie) for movie in movies]
 
 def send_email(booking):
     if not SNS_TOPIC_ARN: return False
@@ -116,7 +160,7 @@ def dashboard():
     if 'user' not in session: return redirect(url_for('login'))
     try:
         response = movies_table.scan()
-        movies = replace_decimals(response.get('Items', [])) 
+        movies = prepare_movies_for_view(response.get('Items', []))
     except ClientError as e:
         movies = []
     return render_template('dashboard.html', movies=movies)
@@ -126,7 +170,7 @@ def movie_details(movie_id):
     if 'user' not in session: return redirect(url_for('login'))
     try:
         response = movies_table.get_item(Key={'movie_id': movie_id})
-        movie = replace_decimals(response.get('Item'))
+        movie = prepare_movie_for_view(response.get('Item'))
         if not movie: 
             flash('Movie not found', 'danger')
             return redirect(url_for('dashboard'))
@@ -252,7 +296,7 @@ def admin_dashboard():
         return redirect(url_for('login'))
     try:
         response = movies_table.scan()
-        movies = replace_decimals(response.get('Items', []))
+        movies = prepare_movies_for_view(response.get('Items', []))
     except ClientError:
         movies = []
     return render_template('admin.html', movies=movies)
@@ -272,7 +316,7 @@ def add_movie():
             'genre': request.form['genre'],
             'language': request.form['language'],
             'duration': request.form['duration'],
-            'image': request.form['image'],
+            'image': normalize_image_url(request.form['image']),
             'trailer': request.form['trailer'],
             'price': Decimal(str(price)),
             'rating': Decimal(str(rating)),
@@ -308,7 +352,7 @@ def edit_movie(movie_id):
                 ':g': request.form['genre'],
                 ':l': request.form['language'],
                 ':d': request.form['duration'],
-                ':i': request.form['image'],
+                ':i': normalize_image_url(request.form['image']),
                 ':tr': request.form['trailer'],
                 ':p': Decimal(str(price)),
                 ':r': Decimal(str(rating)),

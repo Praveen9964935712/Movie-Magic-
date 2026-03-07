@@ -26,12 +26,13 @@
         <div class="movie-grid">
             {% for movie in movies %}
             <a href="{{ url_for('movie_details', movie_id=movie.movie_id) }}" class="movie-card" style="text-decoration: none; color: inherit; display: block;">
-                
-                {% if movie.image.startswith('http') %}
-                    <img src="{{ movie.image }}" alt="{{ movie.title }}" class="movie-poster">
-                {% else %}
-                    <img src="{{ url_for('static', filename='images/' + movie.image) }}" alt="{{ movie.title }}" class="movie-poster">
-                {% endif %}
+                <img
+                    src="{{ url_for('static', filename='images/mad.jpg') }}"
+                    data-image="{{ movie.image }}"
+                    data-fallback="{{ url_for('static', filename='images/mad.jpg') }}"
+                    alt="{{ movie.title }}"
+                    class="movie-poster movie-poster-dynamic"
+                >
                 
                 <div class="movie-info">
                     <div class="movie-title">{{ movie.title }}</div>
@@ -47,5 +48,76 @@
             {% endfor %}
         </div>
     </div>
+
+    <script>
+        function extractGoogleDriveId(url) {
+            if (!url) return null;
+
+            const filePathMatch = url.match(/\/file\/d\/([^/]+)/);
+            if (filePathMatch && filePathMatch[1]) return filePathMatch[1];
+
+            const idQueryMatch = url.match(/[?&]id=([^&]+)/);
+            if (idQueryMatch && idQueryMatch[1]) return idQueryMatch[1];
+
+            return null;
+        }
+
+        function buildImageCandidates(rawUrl) {
+            if (!rawUrl) return [];
+
+            let url = String(rawUrl).trim();
+            if (!url) return [];
+
+            if (url.startsWith('www.')) {
+                url = 'https://' + url;
+            } else if (url.startsWith('//')) {
+                url = 'https:' + url;
+            }
+
+            const candidates = [];
+            const add = (u) => {
+                if (u && !candidates.includes(u)) candidates.push(u);
+            };
+
+            // If admin typed a local file name like mad.jpg
+            if (!url.startsWith('http') && !url.includes('/')) {
+                add("{{ url_for('static', filename='images/') }}" + url);
+                return candidates;
+            }
+
+            add(url);
+
+            if (url.includes('drive.google.com') || url.includes('drive.usercontent.google.com')) {
+                const fileId = extractGoogleDriveId(url);
+                if (fileId) {
+                    // Try multiple Google endpoints because one may timeout intermittently.
+                    add('https://drive.google.com/uc?export=view&id=' + fileId);
+                    add('https://drive.usercontent.google.com/download?id=' + fileId + '&export=view&authuser=0');
+                    add('https://drive.google.com/thumbnail?id=' + fileId + '&sz=w1000');
+                }
+            }
+
+            return candidates;
+        }
+
+        function loadWithCandidates(img, candidates, index) {
+            if (!candidates.length || index >= candidates.length) {
+                img.onerror = null;
+                img.src = img.dataset.fallback;
+                return;
+            }
+
+            img.onerror = function () {
+                loadWithCandidates(img, candidates, index + 1);
+            };
+            img.src = candidates[index];
+        }
+
+        document.querySelectorAll('.movie-poster-dynamic').forEach((img) => {
+            const raw = img.dataset.image || '';
+            const candidates = buildImageCandidates(raw);
+            loadWithCandidates(img, candidates, 0);
+        });
+    </script>
 </body>
 </html>
